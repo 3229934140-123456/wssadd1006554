@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { patientStore, alignerStore, generateId } from '../store';
+import { patientStore, alignerStore, generateId, getExistingDoctorInfo } from '../store';
 import type { Aligner, DuplicatePatientCheck, BatchStockInItem } from '../types';
 import LabelPrintModal from '../components/LabelPrintModal';
 
@@ -100,21 +100,24 @@ function StockInPage({ onShelfChange }: StockInPageProps) {
       return;
     }
 
-    const hasDoctor = !!formData.doctor.trim();
+    const existingDoctor = getExistingDoctorInfo(formData.caseNumber.trim());
+    const inputDoctor = formData.doctor.trim();
+    const finalDoctor = inputDoctor || existingDoctor || '';
+    const hasDoctor = !!finalDoctor;
 
     let patientId = '';
     const existingPatient = patientStore.findByCaseNumber(formData.caseNumber.trim());
 
     if (existingPatient) {
       patientId = existingPatient.id;
-      if (formData.doctor.trim() && !existingPatient.doctor) {
-        patientStore.update(existingPatient.id, { doctor: formData.doctor.trim() });
+      if (finalDoctor && !existingPatient.doctor) {
+        patientStore.update(existingPatient.id, { doctor: finalDoctor });
       }
     } else {
       const newPatient = patientStore.create({
         name: formData.patientName.trim(),
         caseNumber: formData.caseNumber.trim(),
-        doctor: formData.doctor.trim() || undefined,
+        doctor: finalDoctor || undefined,
         phone: formData.phone.trim() || undefined,
       });
       patientId = newPatient.id;
@@ -136,6 +139,7 @@ function StockInPage({ onShelfChange }: StockInPageProps) {
       remark: formData.remark.trim() || undefined,
       hasDoctorInfo: hasDoctor,
       needDoctorInfo: !hasDoctor,
+      originalArrivedPairs: arrivedPairs,
     });
 
     setFormData({
@@ -150,7 +154,8 @@ function StockInPage({ onShelfChange }: StockInPageProps) {
       remark: '',
     });
 
-    setSuccessMessage(`已登记：${newAligner.patientName} - 第${newAligner.stageNumber}阶段${!hasDoctor ? '（待补医生）' : ''}`);
+    const doctorSource = existingDoctor && !inputDoctor ? `（沿用已有医生：${existingDoctor}）` : '';
+    setSuccessMessage(`已登记：${newAligner.patientName} - 第${newAligner.stageNumber}阶段${!hasDoctor ? '（待补医生）' : doctorSource}`);
     setTimeout(() => setSuccessMessage(''), 3000);
 
     loadPendingList();
@@ -353,20 +358,24 @@ function StockInPage({ onShelfChange }: StockInPageProps) {
 
     confirmedItems.forEach(item => {
       try {
-        const hasDoctor = !!item.doctor.trim();
+        const existingDoctor = getExistingDoctorInfo(item.caseNumber);
+        const inputDoctor = item.doctor.trim();
+        const finalDoctor = inputDoctor || existingDoctor || '';
+        const hasDoctor = !!finalDoctor;
+
         let patientId = '';
         const existingPatient = patientStore.findByCaseNumber(item.caseNumber);
 
         if (existingPatient) {
           patientId = existingPatient.id;
-          if (item.doctor.trim() && !existingPatient.doctor) {
-            patientStore.update(existingPatient.id, { doctor: item.doctor.trim() });
+          if (finalDoctor && !existingPatient.doctor) {
+            patientStore.update(existingPatient.id, { doctor: finalDoctor });
           }
         } else {
           const newPatient = patientStore.create({
             name: item.patientName,
             caseNumber: item.caseNumber,
-            doctor: item.doctor.trim() || undefined,
+            doctor: finalDoctor || undefined,
             phone: item.phone.trim() || undefined,
           });
           patientId = newPatient.id;
@@ -390,6 +399,7 @@ function StockInPage({ onShelfChange }: StockInPageProps) {
           needDoctorInfo: !hasDoctor,
           isBatch: true,
           batchId,
+          originalArrivedPairs: arrivedPairs,
         });
 
         successCount++;

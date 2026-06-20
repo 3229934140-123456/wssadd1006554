@@ -183,7 +183,8 @@ export const alignerStore = {
     const newAligner: Aligner = {
       ...aligner,
       id: generateId(),
-    };
+      originalArrivedPairs: aligner.arrivedPairs,
+    } as Aligner;
     aligners.push(newAligner);
     saveToStorage(STORAGE_KEYS.ALIGNERS, aligners);
 
@@ -200,6 +201,7 @@ export const alignerStore = {
       details: {
         manufacturer: newAligner.manufacturer,
         arrivedPairs: newAligner.arrivedPairs,
+        originalArrivedPairs: newAligner.originalArrivedPairs,
         totalPairs: newAligner.totalPairs,
       },
     });
@@ -267,7 +269,8 @@ export const alignerStore = {
         cellNumber: newAligner.cellNumber,
         storedDate: newAligner.storedDate || new Date().toISOString(),
         operator: 'system',
-      });
+        pairs: oldAligner.originalArrivedPairs ?? newAligner.arrivedPairs,
+      } as unknown as ShelfHistoryRecord);
     }
 
     if (wasOnShelf && !isNowOnShelf && oldAligner.cabinetNumber && oldAligner.layerNumber && oldAligner.cellNumber) {
@@ -410,6 +413,34 @@ export const handoverStore = {
     };
     records.push(newRecord);
     saveToStorage(STORAGE_KEYS.HANDOVERS, records);
+
+    const aligner = alignerStore.getById(record.alignerId);
+    const purposeText =
+      record.purpose === 'clinic_delivery' ? '当场发放' :
+      record.purpose === 'chairside_check' ? '诊室检查' :
+      record.purpose === 'return' ? '退回' :
+      record.purpose === 'reissue' ? '补发' : '包装损坏';
+
+    operationStore.create({
+      type: 'handover',
+      alignerId: record.alignerId,
+      patientId: aligner?.patientId,
+      patientName: record.patientName,
+      caseNumber: record.caseNumber,
+      stageNumber: aligner?.stageNumber,
+      date: record.handoverDate,
+      operator: record.operator,
+      description: `交接领取：${record.patientName} ${record.caseNumber}，${record.receiver}领取${record.pairsTaken}副，用途：${purposeText}`,
+      details: {
+        handoverId: newRecord.id,
+        receiver: record.receiver,
+        receiverRole: record.receiverRole,
+        pairsTaken: record.pairsTaken,
+        purpose: record.purpose,
+        remark: record.remark,
+      },
+    });
+
     return newRecord;
   },
 
@@ -432,23 +463,36 @@ export const handoverStore = {
 
     const aligner = alignerStore.getById(record.alignerId);
     if (aligner) {
-      const newArrivedPairs = aligner.arrivedPairs + record.pairsTaken;
+      const maxPairs = aligner.originalArrivedPairs ?? aligner.arrivedPairs + record.pairsTaken;
+      const newArrivedPairs = Math.min(aligner.arrivedPairs + record.pairsTaken, maxPairs);
+      const actuallyRestored = newArrivedPairs - aligner.arrivedPairs;
+
       let newStatus = aligner.status;
       if (['handed_over', 'returned', 'damaged'].includes(aligner.status) && newArrivedPairs > 0) {
         newStatus = 'stored';
       }
+
       alignerStore.update(aligner.id, {
         arrivedPairs: newArrivedPairs,
         status: newStatus,
       });
 
-      if (aligner.shelfId) {
+      if (aligner.shelfId && newArrivedPairs > 0) {
         const shelf = shelfStore.getById(aligner.shelfId);
         if (shelf && !shelf.isOccupied) {
           shelfStore.update(shelf.id, {
             isOccupied: true,
             alignerId: aligner.id,
           });
+        }
+      } else if (aligner.cabinetNumber && aligner.layerNumber && aligner.cellNumber && newArrivedPairs > 0) {
+        const shelf = shelfStore.getByPosition(aligner.cabinetNumber, aligner.layerNumber, aligner.cellNumber);
+        if (shelf && !shelf.isOccupied) {
+          shelfStore.update(shelf.id, {
+            isOccupied: true,
+            alignerId: aligner.id,
+          });
+          alignerStore.update(aligner.id, { shelfId: shelf.id });
         }
       }
 
@@ -461,12 +505,14 @@ export const handoverStore = {
         stageNumber: aligner.stageNumber,
         date: new Date().toISOString(),
         operator: operator,
-        description: `撤销交接：${record.patientName} ${record.caseNumber}，撤销原因：${reason}，恢复${record.pairsTaken}副`,
+        description: `撤销交接：${record.patientName} ${record.caseNumber}，撤销原因：${reason}，恢复${actuallyRestored}副`,
         details: {
           handoverId: id,
           pairsRestored: record.pairsTaken,
           revokeReason: reason,
           originalReceiver: record.receiver,
+          actuallyRestored,
+          maxPairs,
         },
       });
     }
@@ -541,6 +587,33 @@ export const inventoryStore = {
     };
     records.push(newRecord);
     saveToStorage(STORAGE_KEYS.INVENTORY_RECORDS, records);
+
+    const statusText =
+      record.status === 'normal' ? '正常' :
+      record.status === 'empty' ? '空格' :
+      record.status === 'mismatch' ? '错放' : '缺失';
+
+    operationStore.create({
+      type: 'inventory',
+      alignerId: record.expectedAlignerId,
+      patientName: record.expectedPatientName || '未指定',
+      caseNumber: record.expectedCaseNumber || '-',
+      stageNumber: record.expectedStageNumber,
+      date: record.inventoryDate,
+      operator: record.inventoryBy,
+      description: `盘点记录：${record.cabinetNumber}柜-${record.layerNumber}层-${record.cellNumber}格，结果：${statusText}`,
+      details: {
+        inventoryRecordId: newRecord.id,
+        cabinetNumber: record.cabinetNumber,
+        layerNumber: record.layerNumber,
+        cellNumber: record.cellNumber,
+        status: record.status,
+        expectedPatientName: record.expectedPatientName,
+        actualPatientName: record.actualPatientName,
+        remark: record.remark,
+      },
+    });
+
     return newRecord;
   },
 
@@ -560,6 +633,35 @@ export const inventoryStore = {
       id: generateId(),
     }));
     saveToStorage(STORAGE_KEYS.INVENTORY_RECORDS, [...existingRecords, ...newRecords]);
+
+    newRecords.forEach(newRecord => {
+      const statusText =
+        newRecord.status === 'normal' ? '正常' :
+        newRecord.status === 'empty' ? '空格' :
+        newRecord.status === 'mismatch' ? '错放' : '缺失';
+
+      operationStore.create({
+        type: 'inventory',
+        alignerId: newRecord.expectedAlignerId,
+        patientName: newRecord.expectedPatientName || '未指定',
+        caseNumber: newRecord.expectedCaseNumber || '-',
+        stageNumber: newRecord.expectedStageNumber,
+        date: newRecord.inventoryDate,
+        operator: newRecord.inventoryBy,
+        description: `盘点记录：${newRecord.cabinetNumber}柜-${newRecord.layerNumber}层-${newRecord.cellNumber}格，结果：${statusText}`,
+        details: {
+          inventoryRecordId: newRecord.id,
+          cabinetNumber: newRecord.cabinetNumber,
+          layerNumber: newRecord.layerNumber,
+          cellNumber: newRecord.cellNumber,
+          status: newRecord.status,
+          expectedPatientName: newRecord.expectedPatientName,
+          actualPatientName: newRecord.actualPatientName,
+          remark: newRecord.remark,
+        },
+      });
+    });
+
     return newRecords;
   },
 };
@@ -579,7 +681,7 @@ export function calculateMonthlyStats(year: number, month: number): MonthlyStats
   });
 
   const stockInCount = stockInAligners.length;
-  const stockInPairs = stockInAligners.reduce((sum, a) => sum + a.arrivedPairs, 0);
+  const stockInPairs = stockInAligners.reduce((sum, a) => sum + (a.originalArrivedPairs ?? a.arrivedPairs), 0);
 
   const shelfOnRecords = shelfHistories.filter(h => {
     const storedTime = new Date(h.storedDate).getTime();
@@ -589,9 +691,13 @@ export function calculateMonthlyStats(year: number, month: number): MonthlyStats
   const shelfOnCount = shelfOnRecords.length;
   let shelfOnPairs = 0;
   shelfOnRecords.forEach(h => {
-    const aligner = aligners.find(a => a.id === h.alignerId);
-    if (aligner) {
-      shelfOnPairs += aligner.arrivedPairs;
+    if ((h as any).pairs !== undefined) {
+      shelfOnPairs += (h as any).pairs;
+    } else {
+      const aligner = aligners.find(a => a.id === h.alignerId);
+      if (aligner) {
+        shelfOnPairs += (aligner.originalArrivedPairs ?? aligner.arrivedPairs);
+      }
     }
   });
 
@@ -676,7 +782,7 @@ export function exportRecords(filter: ExportFilter): string {
           h.cabinetNumber,
           h.layerNumber,
           h.cellNumber,
-          aligner?.arrivedPairs || '-',
+          (h as any).pairs ?? aligner?.originalArrivedPairs ?? aligner?.arrivedPairs ?? '-',
           aligner?.manufacturer || '-',
           patient?.doctor || '待补录',
           h.removedReason || '-',
@@ -728,4 +834,9 @@ export function downloadCSV(content: string, filename: string): void {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+export function getExistingDoctorInfo(caseNumber: string): string | undefined {
+  const patient = patientStore.findByCaseNumber(caseNumber);
+  return patient?.doctor;
 }
