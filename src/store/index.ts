@@ -1,4 +1,15 @@
-import type { Patient, Aligner, Shelf, HandoverRecord, InventoryRecord, InventoryBatch, ExportFilter } from '../types';
+import type {
+  Patient,
+  Aligner,
+  Shelf,
+  HandoverRecord,
+  InventoryRecord,
+  InventoryBatch,
+  ExportFilter,
+  OperationLog,
+  ShelfHistoryRecord,
+  MonthlyStats,
+} from '../types';
 
 const STORAGE_KEYS = {
   PATIENTS: 'aligner_patients',
@@ -7,6 +18,8 @@ const STORAGE_KEYS = {
   HANDOVERS: 'aligner_handovers',
   INVENTORY_RECORDS: 'aligner_inventory_records',
   INVENTORY_BATCHES: 'aligner_inventory_batches',
+  OPERATION_LOGS: 'aligner_operation_logs',
+  SHELF_HISTORY: 'aligner_shelf_history',
 };
 
 export function generateId(): string {
@@ -67,6 +80,75 @@ export const patientStore = {
   },
 };
 
+export const operationStore = {
+  getAll(): OperationLog[] {
+    return getFromStorage<OperationLog>(STORAGE_KEYS.OPERATION_LOGS)
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  },
+
+  getByAlignerId(alignerId: string): OperationLog[] {
+    return this.getAll()
+      .filter(log => log.alignerId === alignerId);
+  },
+
+  getByPatientId(patientId: string): OperationLog[] {
+    return this.getAll()
+      .filter(log => log.patientId === patientId);
+  },
+
+  create(log: Omit<OperationLog, 'id'>): OperationLog {
+    const logs = getFromStorage<OperationLog>(STORAGE_KEYS.OPERATION_LOGS);
+    const newLog: OperationLog = {
+      ...log,
+      id: generateId(),
+    };
+    logs.push(newLog);
+    saveToStorage(STORAGE_KEYS.OPERATION_LOGS, logs);
+    return newLog;
+  },
+};
+
+export const shelfHistoryStore = {
+  getAll(): ShelfHistoryRecord[] {
+    return getFromStorage<ShelfHistoryRecord>(STORAGE_KEYS.SHELF_HISTORY)
+      .sort((a, b) => new Date(b.storedDate).getTime() - new Date(a.storedDate).getTime());
+  },
+
+  getByAlignerId(alignerId: string): ShelfHistoryRecord[] {
+    return this.getAll()
+      .filter(r => r.alignerId === alignerId);
+  },
+
+  create(record: Omit<ShelfHistoryRecord, 'id'>): ShelfHistoryRecord {
+    const records = getFromStorage<ShelfHistoryRecord>(STORAGE_KEYS.SHELF_HISTORY);
+    const newRecord: ShelfHistoryRecord = {
+      ...record,
+      id: generateId(),
+    };
+    records.push(newRecord);
+    saveToStorage(STORAGE_KEYS.SHELF_HISTORY, records);
+    return newRecord;
+  },
+
+  update(id: string, updates: Partial<ShelfHistoryRecord>): ShelfHistoryRecord | undefined {
+    const records = getFromStorage<ShelfHistoryRecord>(STORAGE_KEYS.SHELF_HISTORY);
+    const index = records.findIndex(r => r.id === id);
+    if (index === -1) return undefined;
+    records[index] = { ...records[index], ...updates };
+    saveToStorage(STORAGE_KEYS.SHELF_HISTORY, records);
+    return records[index];
+  },
+
+  getByDateRange(startDate: string, endDate: string): ShelfHistoryRecord[] {
+    const start = new Date(startDate).getTime();
+    const end = new Date(endDate + 'T23:59:59').getTime();
+    return this.getAll().filter(r => {
+      const storedTime = new Date(r.storedDate).getTime();
+      return storedTime >= start && storedTime <= end;
+    });
+  },
+};
+
 export const alignerStore = {
   getAll(): Aligner[] {
     return getFromStorage<Aligner>(STORAGE_KEYS.ALIGNERS);
@@ -104,6 +186,24 @@ export const alignerStore = {
     };
     aligners.push(newAligner);
     saveToStorage(STORAGE_KEYS.ALIGNERS, aligners);
+
+    operationStore.create({
+      type: 'stock-in',
+      alignerId: newAligner.id,
+      patientId: newAligner.patientId,
+      patientName: newAligner.patientName,
+      caseNumber: newAligner.caseNumber,
+      stageNumber: newAligner.stageNumber,
+      date: new Date().toISOString(),
+      operator: 'system',
+      description: `牙套入库：${newAligner.patientName} ${newAligner.caseNumber} 第${newAligner.stageNumber}阶段，到货${newAligner.arrivedPairs}副`,
+      details: {
+        manufacturer: newAligner.manufacturer,
+        arrivedPairs: newAligner.arrivedPairs,
+        totalPairs: newAligner.totalPairs,
+      },
+    });
+
     return newAligner;
   },
 
@@ -111,8 +211,94 @@ export const alignerStore = {
     const aligners = this.getAll();
     const index = aligners.findIndex(a => a.id === id);
     if (index === -1) return undefined;
-    aligners[index] = { ...aligners[index], ...updates };
+
+    const oldAligner = aligners[index];
+    const newAligner = { ...oldAligner, ...updates };
+    aligners[index] = newAligner;
     saveToStorage(STORAGE_KEYS.ALIGNERS, aligners);
+
+    if (updates.hasDoctorInfo !== undefined && updates.hasDoctorInfo !== oldAligner.hasDoctorInfo) {
+      const patient = patientStore.getById(newAligner.patientId);
+      operationStore.create({
+        type: 'doctor-update',
+        alignerId: newAligner.id,
+        patientId: newAligner.patientId,
+        patientName: newAligner.patientName,
+        caseNumber: newAligner.caseNumber,
+        stageNumber: newAligner.stageNumber,
+        date: new Date().toISOString(),
+        operator: 'system',
+        description: `医生信息更新：${newAligner.patientName} ${newAligner.caseNumber}，${updates.hasDoctorInfo ? '已补录' : '已清除'}医生信息`,
+        details: {
+          hasDoctorInfo: updates.hasDoctorInfo,
+          doctor: patient?.doctor || '',
+        },
+      });
+    }
+
+    const wasOnShelf = !!oldAligner.shelfId;
+    const isNowOnShelf = !!newAligner.shelfId;
+
+    if (!wasOnShelf && isNowOnShelf && newAligner.cabinetNumber && newAligner.layerNumber && newAligner.cellNumber) {
+      operationStore.create({
+        type: 'shelf-on',
+        alignerId: newAligner.id,
+        patientId: newAligner.patientId,
+        patientName: newAligner.patientName,
+        caseNumber: newAligner.caseNumber,
+        stageNumber: newAligner.stageNumber,
+        date: new Date().toISOString(),
+        operator: 'system',
+        description: `牙套上架：${newAligner.patientName} ${newAligner.caseNumber} 第${newAligner.stageNumber}阶段，柜位 ${newAligner.cabinetNumber}-${newAligner.layerNumber}-${newAligner.cellNumber}`,
+        details: {
+          cabinetNumber: newAligner.cabinetNumber,
+          layerNumber: newAligner.layerNumber,
+          cellNumber: newAligner.cellNumber,
+        },
+      });
+
+      shelfHistoryStore.create({
+        alignerId: newAligner.id,
+        patientName: newAligner.patientName,
+        caseNumber: newAligner.caseNumber,
+        stageNumber: newAligner.stageNumber,
+        cabinetNumber: newAligner.cabinetNumber,
+        layerNumber: newAligner.layerNumber,
+        cellNumber: newAligner.cellNumber,
+        storedDate: newAligner.storedDate || new Date().toISOString(),
+        operator: 'system',
+      });
+    }
+
+    if (wasOnShelf && !isNowOnShelf && oldAligner.cabinetNumber && oldAligner.layerNumber && oldAligner.cellNumber) {
+      operationStore.create({
+        type: 'shelf-off',
+        alignerId: newAligner.id,
+        patientId: newAligner.patientId,
+        patientName: newAligner.patientName,
+        caseNumber: newAligner.caseNumber,
+        stageNumber: newAligner.stageNumber,
+        date: new Date().toISOString(),
+        operator: 'system',
+        description: `牙套下架：${newAligner.patientName} ${newAligner.caseNumber} 第${newAligner.stageNumber}阶段，原柜位 ${oldAligner.cabinetNumber}-${oldAligner.layerNumber}-${oldAligner.cellNumber}`,
+        details: {
+          cabinetNumber: oldAligner.cabinetNumber,
+          layerNumber: oldAligner.layerNumber,
+          cellNumber: oldAligner.cellNumber,
+          reason: updates.status || '下架',
+        },
+      });
+
+      const histories = shelfHistoryStore.getByAlignerId(newAligner.id);
+      const activeHistory = histories.find(h => !h.removedDate && h.cabinetNumber === oldAligner.cabinetNumber && h.layerNumber === oldAligner.layerNumber && h.cellNumber === oldAligner.cellNumber);
+      if (activeHistory) {
+        shelfHistoryStore.update(activeHistory.id, {
+          removedDate: new Date().toISOString(),
+          removedReason: updates.status || '下架',
+        });
+      }
+    }
+
     return aligners[index];
   },
 
@@ -227,6 +413,67 @@ export const handoverStore = {
     return newRecord;
   },
 
+  revoke(id: string, reason: string, operator: string): HandoverRecord | undefined {
+    const records = this.getAll();
+    const index = records.findIndex(h => h.id === id);
+    if (index === -1) return undefined;
+
+    const record = records[index];
+    if (record.isRevoked) return undefined;
+
+    records[index] = {
+      ...record,
+      isRevoked: true,
+      revokedAt: new Date().toISOString(),
+      revokedBy: operator,
+      revokeReason: reason,
+    };
+    saveToStorage(STORAGE_KEYS.HANDOVERS, records);
+
+    const aligner = alignerStore.getById(record.alignerId);
+    if (aligner) {
+      const newArrivedPairs = aligner.arrivedPairs + record.pairsTaken;
+      let newStatus = aligner.status;
+      if (['handed_over', 'returned', 'damaged'].includes(aligner.status) && newArrivedPairs > 0) {
+        newStatus = 'stored';
+      }
+      alignerStore.update(aligner.id, {
+        arrivedPairs: newArrivedPairs,
+        status: newStatus,
+      });
+
+      if (aligner.shelfId) {
+        const shelf = shelfStore.getById(aligner.shelfId);
+        if (shelf && !shelf.isOccupied) {
+          shelfStore.update(shelf.id, {
+            isOccupied: true,
+            alignerId: aligner.id,
+          });
+        }
+      }
+
+      operationStore.create({
+        type: 'handover-revoke',
+        alignerId: aligner.id,
+        patientId: aligner.patientId,
+        patientName: record.patientName,
+        caseNumber: record.caseNumber,
+        stageNumber: aligner.stageNumber,
+        date: new Date().toISOString(),
+        operator: operator,
+        description: `撤销交接：${record.patientName} ${record.caseNumber}，撤销原因：${reason}，恢复${record.pairsTaken}副`,
+        details: {
+          handoverId: id,
+          pairsRestored: record.pairsTaken,
+          revokeReason: reason,
+          originalReceiver: record.receiver,
+        },
+      });
+    }
+
+    return records[index];
+  },
+
   search(keyword: string): HandoverRecord[] {
     const lowerKeyword = keyword.toLowerCase();
     return this.getAll().filter(h =>
@@ -317,6 +564,70 @@ export const inventoryStore = {
   },
 };
 
+export function calculateMonthlyStats(year: number, month: number): MonthlyStats {
+  const startOfMonth = new Date(year, month - 1, 1).getTime();
+  const endOfMonth = new Date(year, month, 0, 23, 59, 59).getTime();
+
+  const aligners = alignerStore.getAll();
+  const handovers = handoverStore.getAll();
+  const inventoryRecords = inventoryStore.getAllRecords();
+  const shelfHistories = shelfHistoryStore.getAll();
+
+  const stockInAligners = aligners.filter(a => {
+    const arrivedTime = new Date(a.arrivedDate).getTime();
+    return arrivedTime >= startOfMonth && arrivedTime <= endOfMonth;
+  });
+
+  const stockInCount = stockInAligners.length;
+  const stockInPairs = stockInAligners.reduce((sum, a) => sum + a.arrivedPairs, 0);
+
+  const shelfOnRecords = shelfHistories.filter(h => {
+    const storedTime = new Date(h.storedDate).getTime();
+    return storedTime >= startOfMonth && storedTime <= endOfMonth;
+  });
+
+  const shelfOnCount = shelfOnRecords.length;
+  let shelfOnPairs = 0;
+  shelfOnRecords.forEach(h => {
+    const aligner = aligners.find(a => a.id === h.alignerId);
+    if (aligner) {
+      shelfOnPairs += aligner.arrivedPairs;
+    }
+  });
+
+  const validHandovers = handovers.filter(h => {
+    const handoverTime = new Date(h.handoverDate).getTime();
+    return handoverTime >= startOfMonth && handoverTime <= endOfMonth && !h.isRevoked;
+  });
+
+  const handoverCount = validHandovers.length;
+  const handoverPairs = validHandovers.reduce((sum, h) => sum + h.pairsTaken, 0);
+
+  const storedAligners = aligners.filter(a => a.status === 'stored');
+  const currentInStockCount = storedAligners.length;
+  const currentInStockPairs = storedAligners.reduce((sum, a) => sum + a.arrivedPairs, 0);
+
+  const abnormalInventoryCount = inventoryRecords.filter(r => {
+    const inventoryTime = new Date(r.inventoryDate).getTime();
+    return inventoryTime >= startOfMonth && inventoryTime <= endOfMonth && 
+           (r.status === 'mismatch' || r.status === 'missing');
+  }).length;
+
+  return {
+    year,
+    month,
+    stockInCount,
+    stockInPairs,
+    shelfOnCount,
+    shelfOnPairs,
+    handoverCount,
+    handoverPairs,
+    currentInStockCount,
+    currentInStockPairs,
+    abnormalInventoryCount,
+  };
+}
+
 export function exportRecords(filter: ExportFilter): string {
   const { startDate, endDate, recordType } = filter;
   const start = new Date(startDate).getTime();
@@ -351,22 +662,24 @@ export function exportRecords(filter: ExportFilter): string {
       break;
     }
     case 'shelf': {
-      const shelves = shelfStore.getAll().filter(s => s.isOccupied);
-      headers = ['柜号', '层号', '格口', '患者姓名', '病例号', '阶段编号', '厂家', '副数', '上架日期', '主治医生'];
-      data = shelves.map(s => {
-        const aligner = s.alignerId ? alignerStore.getById(s.alignerId) : undefined;
+      const histories = shelfHistoryStore.getByDateRange(startDate, endDate);
+      headers = ['上架日期', '下架日期', '患者姓名', '病例号', '阶段编号', '柜号', '层号', '格口', '副数', '厂家', '主治医生', '下架原因'];
+      data = histories.map(h => {
+        const aligner = alignerStore.getById(h.alignerId);
         const patient = aligner ? patientStore.getById(aligner.patientId) : undefined;
         return [
-          s.cabinetNumber,
-          s.layerNumber,
-          s.cellNumber,
-          aligner?.patientName || '-',
-          aligner?.caseNumber || '-',
-          aligner ? `第${aligner.stageNumber}阶段` : '-',
-          aligner?.manufacturer || '-',
+          new Date(h.storedDate).toLocaleDateString('zh-CN'),
+          h.removedDate ? new Date(h.removedDate).toLocaleDateString('zh-CN') : '-',
+          h.patientName,
+          h.caseNumber,
+          `第${h.stageNumber}阶段`,
+          h.cabinetNumber,
+          h.layerNumber,
+          h.cellNumber,
           aligner?.arrivedPairs || '-',
-          aligner?.storedDate ? new Date(aligner.storedDate).toLocaleDateString('zh-CN') : '-',
+          aligner?.manufacturer || '-',
           patient?.doctor || '待补录',
+          h.removedReason || '-',
         ];
       });
       break;

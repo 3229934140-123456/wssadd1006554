@@ -33,6 +33,12 @@ function HandoverPage({ onHandoverChange }: HandoverPageProps) {
   const [batchSelections, setBatchSelections] = useState<BatchSelection[]>([]);
   const [collapsedGroups, setCollapsedGroups] = useState<CollapsedGroup>({});
   const [collapsedRecordGroups, setCollapsedRecordGroups] = useState<CollapsedGroup>({});
+  const [showRevokeModal, setShowRevokeModal] = useState(false);
+  const [revokingRecord, setRevokingRecord] = useState<HandoverRecord | null>(null);
+  const [revokeForm, setRevokeForm] = useState({
+    reason: '',
+    operator: '管理员',
+  });
 
   const [handoverForm, setHandoverForm] = useState({
     receiver: '',
@@ -360,6 +366,40 @@ function HandoverPage({ onHandoverChange }: HandoverPageProps) {
     return classes[purpose];
   };
 
+  const handleOpenRevokeModal = (record: HandoverRecord) => {
+    setRevokingRecord(record);
+    setRevokeForm({
+      reason: '',
+      operator: '管理员',
+    });
+    setShowRevokeModal(true);
+  };
+
+  const handleRevokeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!revokingRecord) return;
+
+    if (!revokeForm.reason.trim() || revokeForm.reason.trim().length < 5) {
+      alert('请填写撤销原因（至少5个字）');
+      return;
+    }
+
+    const operator = revokeForm.operator.trim() || '管理员';
+
+    handoverStore.revoke(
+      revokingRecord.id,
+      revokeForm.reason.trim(),
+      operator
+    );
+
+    setShowRevokeModal(false);
+    setRevokingRecord(null);
+    loadData();
+    onHandoverChange?.();
+    alert('撤销成功');
+  };
+
   const purposeOptions = [
     { value: 'chairside_check', label: '诊室检查', icon: '🏥' },
     { value: 'clinic_delivery', label: '当场发放', icon: '🤝' },
@@ -602,6 +642,7 @@ function HandoverPage({ onHandoverChange }: HandoverPageProps) {
                       <th>用途</th>
                       <th>操作员</th>
                       <th>备注</th>
+                      <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -609,13 +650,20 @@ function HandoverPage({ onHandoverChange }: HandoverPageProps) {
                       const isCollapsed = collapsedRecordGroups[key];
                       const firstRecord = records[0];
                       const totalPairsInGroup = records.reduce((sum, r) => sum + r.pairsTaken, 0);
+                      const groupRevokedCount = records.filter(r => r.isRevoked).length;
                       
                       if (isBatch) {
                         return (
                           <>
-                            <tr key={key} className="record-group-header" onClick={() => toggleRecordGroupCollapse(key)}>
+                            <tr key={key} className={`record-group-header ${groupRevokedCount === records.length ? 'revoked-row' : ''}`} onClick={() => toggleRecordGroupCollapse(key)}>
                               <td>
                                 <span className="batch-tag">{isCollapsed ? '▶' : '▼'} 批量</span>
+                                {groupRevokedCount > 0 && groupRevokedCount < records.length && (
+                                  <span className="partial-revoked-tag">部分撤销</span>
+                                )}
+                                {groupRevokedCount === records.length && (
+                                  <span className="revoked-tag">已撤销</span>
+                                )}
                               </td>
                               <td>
                                 {new Date(firstRecord.handoverDate).toLocaleString('zh-CN', {
@@ -637,11 +685,13 @@ function HandoverPage({ onHandoverChange }: HandoverPageProps) {
                               </td>
                               <td>{firstRecord.operator}</td>
                               <td className="remark-cell">{firstRecord.remark || '-'}</td>
+                              <td></td>
                             </tr>
                             {!isCollapsed && records.map(record => (
-                              <tr key={record.id} className="record-group-item">
+                              <tr key={record.id} className={`record-group-item ${record.isRevoked ? 'revoked-row' : ''}`}>
                                 <td>
                                   <span className="batch-sub-tag">└</span>
+                                  {record.isRevoked && <span className="revoked-tag">已撤销</span>}
                                 </td>
                                 <td>
                                   {new Date(record.handoverDate).toLocaleString('zh-CN', {
@@ -661,7 +711,30 @@ function HandoverPage({ onHandoverChange }: HandoverPageProps) {
                                   </span>
                                 </td>
                                 <td>{record.operator}</td>
-                                <td className="remark-cell">{record.remark || '-'}</td>
+                                <td className="remark-cell">
+                                  <div>{record.remark || '-'}</div>
+                                  {record.isRevoked && (
+                                    <div className="revoke-info">
+                                      <div>撤销原因：{record.revokeReason}</div>
+                                      <div>撤销人：{record.revokedBy}</div>
+                                      <div>撤销时间：{record.revokedAt ? new Date(record.revokedAt).toLocaleString('zh-CN') : '-'}</div>
+                                    </div>
+                                  )}
+                                </td>
+                                <td>
+                                  {!record.isRevoked && (
+                                    <button
+                                      type="button"
+                                      className="btn btn-danger btn-sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenRevokeModal(record);
+                                      }}
+                                    >
+                                      撤销
+                                    </button>
+                                  )}
+                                </td>
                               </tr>
                             ))}
                           </>
@@ -670,9 +743,10 @@ function HandoverPage({ onHandoverChange }: HandoverPageProps) {
                       
                       const record = records[0];
                       return (
-                        <tr key={record.id}>
+                        <tr key={record.id} className={record.isRevoked ? 'revoked-row' : ''}>
                           <td>
                             <span className="single-tag">单个</span>
+                            {record.isRevoked && <span className="revoked-tag">已撤销</span>}
                           </td>
                           <td>
                             {new Date(record.handoverDate).toLocaleString('zh-CN', {
@@ -692,7 +766,27 @@ function HandoverPage({ onHandoverChange }: HandoverPageProps) {
                             </span>
                           </td>
                           <td>{record.operator}</td>
-                          <td className="remark-cell">{record.remark || '-'}</td>
+                          <td className="remark-cell">
+                            <div>{record.remark || '-'}</div>
+                            {record.isRevoked && (
+                              <div className="revoke-info">
+                                <div>撤销原因：{record.revokeReason}</div>
+                                <div>撤销人：{record.revokedBy}</div>
+                                <div>撤销时间：{record.revokedAt ? new Date(record.revokedAt).toLocaleString('zh-CN') : '-'}</div>
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            {!record.isRevoked && (
+                              <button
+                                type="button"
+                                className="btn btn-danger btn-sm"
+                                onClick={() => handleOpenRevokeModal(record)}
+                              >
+                                撤销
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       );
                     })}
@@ -1005,6 +1099,82 @@ function HandoverPage({ onHandoverChange }: HandoverPageProps) {
         </div>
       )}
 
+      {showRevokeModal && revokingRecord && (
+        <div className="modal-overlay" onClick={() => setShowRevokeModal(false)}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>确认撤销交接记录</h3>
+              <button className="close-btn" onClick={() => setShowRevokeModal(false)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="revoke-warning">
+                <div className="revoke-warning-icon">⚠️</div>
+                <div className="revoke-warning-text">
+                  <strong>警告：</strong>撤销后将恢复库存数量和柜位占用
+                </div>
+              </div>
+
+              <div className="revoke-info-summary">
+                <div className="revoke-info-row">
+                  <span className="revoke-info-label">领取人：</span>
+                  <span className="revoke-info-value">{revokingRecord.receiver}（{revokingRecord.receiverRole}）</span>
+                </div>
+                <div className="revoke-info-row">
+                  <span className="revoke-info-label">副数：</span>
+                  <span className="revoke-info-value">{revokingRecord.pairsTaken}副</span>
+                </div>
+                <div className="revoke-info-row">
+                  <span className="revoke-info-label">用途：</span>
+                  <span className="revoke-info-value">{getPurposeLabel(revokingRecord.purpose)}</span>
+                </div>
+                <div className="revoke-info-row">
+                  <span className="revoke-info-label">日期：</span>
+                  <span className="revoke-info-value">
+                    {new Date(revokingRecord.handoverDate).toLocaleString('zh-CN')}
+                  </span>
+                </div>
+              </div>
+
+              <form onSubmit={handleRevokeSubmit}>
+                <div className="form-group">
+                  <label>撤销原因 <span className="required">*</span></label>
+                  <textarea
+                    value={revokeForm.reason}
+                    onChange={e => setRevokeForm(prev => ({ ...prev, reason: e.target.value }))}
+                    placeholder="请输入撤销原因（至少5个字）"
+                    rows={3}
+                    autoFocus
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>撤销人</label>
+                  <input
+                    type="text"
+                    value={revokeForm.operator}
+                    onChange={e => setRevokeForm(prev => ({ ...prev, operator: e.target.value }))}
+                    placeholder="默认为管理员"
+                  />
+                </div>
+
+                <div className="modal-footer">
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setShowRevokeModal(false)}
+                  >
+                    取消
+                  </button>
+                  <button type="submit" className="btn btn-danger">
+                    确认撤销
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style>{`
         .mode-toggle-bar {
           display: flex;
@@ -1309,6 +1479,117 @@ function HandoverPage({ onHandoverChange }: HandoverPageProps) {
 
         .record-group-item td:first-child {
           padding-left: 20px;
+        }
+
+        .revoked-row {
+          color: #999 !important;
+          text-decoration: line-through;
+        }
+
+        .revoked-tag {
+          display: inline-block;
+          background: #fde8e8;
+          color: #dc3545;
+          padding: 2px 8px;
+          border-radius: 10px;
+          font-size: 12px;
+          font-weight: 600;
+          margin-left: 6px;
+        }
+
+        .partial-revoked-tag {
+          display: inline-block;
+          background: #fff3cd;
+          color: #856404;
+          padding: 2px 8px;
+          border-radius: 10px;
+          font-size: 12px;
+          font-weight: 500;
+          margin-left: 6px;
+        }
+
+        .revoke-info {
+          margin-top: 8px;
+          padding-top: 8px;
+          border-top: 1px dashed #ddd;
+          font-size: 12px;
+          color: #dc3545;
+          text-decoration: none;
+          line-height: 1.6;
+        }
+
+        .btn-danger {
+          background: #dc3545;
+          color: white;
+          border: none;
+          padding: 8px 16px;
+          border-radius: 6px;
+          font-size: 14px;
+          cursor: pointer;
+          transition: background 0.2s;
+          font-family: inherit;
+        }
+
+        .btn-danger:hover {
+          background: #c82333;
+        }
+
+        .btn-danger:disabled {
+          background: #e57373;
+          cursor: not-allowed;
+        }
+
+        .btn-danger.btn-sm {
+          padding: 4px 12px;
+          font-size: 12px;
+        }
+
+        .revoke-warning {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 16px;
+          background: #fff3cd;
+          border: 1px solid #ffe082;
+          border-radius: 8px;
+          margin-bottom: 20px;
+        }
+
+        .revoke-warning-icon {
+          font-size: 24px;
+        }
+
+        .revoke-warning-text {
+          font-size: 14px;
+          color: #856404;
+        }
+
+        .revoke-warning-text strong {
+          color: #dc3545;
+        }
+
+        .revoke-info-summary {
+          background: #f8f9fa;
+          border-radius: 8px;
+          padding: 16px;
+          margin-bottom: 20px;
+        }
+
+        .revoke-info-row {
+          display: flex;
+          padding: 6px 0;
+          font-size: 14px;
+        }
+
+        .revoke-info-label {
+          color: var(--text-secondary);
+          width: 80px;
+          flex-shrink: 0;
+        }
+
+        .revoke-info-value {
+          color: var(--text-primary);
+          font-weight: 500;
         }
       `}</style>
     </div>

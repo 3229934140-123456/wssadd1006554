@@ -57,6 +57,12 @@ function ShelfPage({ onShelfChange }: ShelfPageProps) {
     loadData();
   }, []);
 
+  useEffect(() => {
+    if (activeTab === 'pending' || activeTab === 'stored') {
+      loadData();
+    }
+  }, [activeTab]);
+
   const loadData = () => {
     setShelves(shelfStore.getAll());
     setPendingAligners(alignerStore.getPendingList().sort((a, b) => 
@@ -546,6 +552,11 @@ function ShelfPage({ onShelfChange }: ShelfPageProps) {
                         <span className="info-label">副数</span>
                         <span className="info-value">{aligner.arrivedPairs} 副</span>
                       </div>
+                      {aligner.needDoctorInfo && (
+                        <div className="info-row warning-row">
+                          <span className="warning-tag">⚠️ 待补医生信息</span>
+                        </div>
+                      )}
                       <div className="info-row">
                         <span className="info-label">厂家</span>
                         <span className="info-value">{aligner.manufacturer}</span>
@@ -1294,6 +1305,24 @@ function ShelfPage({ onShelfChange }: ShelfPageProps) {
           </div>
         </div>
       )}
+
+      <style>{`
+        .warning-row {
+          margin-top: 4px;
+          margin-bottom: 4px;
+        }
+        
+        .warning-tag {
+          display: inline-block;
+          padding: 3px 10px;
+          background: #fff3e0;
+          color: #e65100;
+          border-radius: 4px;
+          font-size: 12px;
+          font-weight: 500;
+          border: 1px solid #ffcc80;
+        }
+      `}</style>
     </div>
   );
 }

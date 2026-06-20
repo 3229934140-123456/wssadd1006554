@@ -4,10 +4,11 @@ import ShelfPage from './pages/ShelfPage';
 import HandoverPage from './pages/HandoverPage';
 import SearchPage from './pages/SearchPage';
 import ExportPage from './pages/ExportPage';
+import MonthlyReportPage from './pages/MonthlyReportPage';
 import { initializeDemoData } from './utils/initData';
 import './App.css';
 
-type PageType = 'stock-in' | 'shelf' | 'handover' | 'search' | 'export';
+type PageType = 'stock-in' | 'shelf' | 'handover' | 'search' | 'export' | 'monthly-report';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<PageType>('stock-in');
@@ -26,6 +27,7 @@ function App() {
     { key: 'shelf', label: '柜位管理', icon: '🗄️' },
     { key: 'handover', label: '交接签收', icon: '📋' },
     { key: 'search', label: '查询搜索', icon: '🔍' },
+    { key: 'monthly-report', label: '月结看板', icon: '📈' },
     { key: 'export', label: '数据导出', icon: '📊' },
   ];
 
@@ -39,6 +41,8 @@ function App() {
         return <HandoverPage key={refreshKey} onHandoverChange={triggerRefresh} />;
       case 'search':
         return <SearchPage key={refreshKey} />;
+      case 'monthly-report':
+        return <MonthlyReportPage key={refreshKey} />;
       case 'export':
         return <ExportPage key={refreshKey} />;
       default:

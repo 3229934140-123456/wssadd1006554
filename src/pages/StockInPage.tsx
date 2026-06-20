@@ -421,15 +421,22 @@ function StockInPage({ onShelfChange }: StockInPageProps) {
       return;
     }
 
-    alignerStore.update(editingAligner.id, {
-      hasDoctorInfo: true,
-      needDoctorInfo: false,
-    });
-
     const patient = patientStore.getById(editingAligner.patientId);
     if (patient) {
       patientStore.update(patient.id, { doctor: doctorInput.trim() });
     }
+
+    const patientAligners = alignerStore.getAll().filter(
+      a => a.patientId === editingAligner.patientId
+    );
+    patientAligners.forEach(a => {
+      if (a.needDoctorInfo || !a.hasDoctorInfo) {
+        alignerStore.update(a.id, {
+          hasDoctorInfo: true,
+          needDoctorInfo: false,
+        });
+      }
+    });
 
     setShowDoctorModal(false);
     setEditingAligner(null);
@@ -438,7 +445,7 @@ function StockInPage({ onShelfChange }: StockInPageProps) {
     loadPendingList();
     onShelfChange?.();
 
-    setSuccessMessage(`已为 ${editingAligner.patientName} 补录医生：${doctorInput.trim()}`);
+    setSuccessMessage(`已为 ${editingAligner.patientName} 补录医生：${doctorInput.trim()}，共更新 ${patientAligners.length} 条牙套记录`);
     setTimeout(() => setSuccessMessage(''), 3000);
   };
 

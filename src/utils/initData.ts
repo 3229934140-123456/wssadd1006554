@@ -169,4 +169,6 @@ export function resetDemoData(): void {
   localStorage.removeItem('aligner_handovers');
   localStorage.removeItem('aligner_inventory_records');
   localStorage.removeItem('aligner_inventory_batches');
+  localStorage.removeItem('aligner_operation_logs');
+  localStorage.removeItem('aligner_shelf_history');
 }

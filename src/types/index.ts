@@ -15,6 +15,7 @@ export interface Aligner {
   stageNumber: string;
   totalPairs: number;
   arrivedPairs: number;
+  originalArrivedPairs?: number;
   status: 'pending' | 'stored' | 'handed_over' | 'returned' | 'damaged';
   shelfId?: string;
   cabinetNumber?: string;
@@ -23,11 +24,19 @@ export interface Aligner {
   manufacturer: string;
   arrivedDate: string;
   storedDate?: string;
+  lastHandedOverDate?: string;
   remark?: string;
   hasDoctorInfo: boolean;
   needDoctorInfo?: boolean;
   isBatch?: boolean;
   batchId?: string;
+  shelfHistory?: Array<{
+    cabinetNumber: string;
+    layerNumber: string;
+    cellNumber: string;
+    storedAt: string;
+    removedAt?: string;
+  }>;
 }
 
 export interface Shelf {
@@ -51,6 +60,11 @@ export interface HandoverRecord {
   handoverDate: string;
   remark?: string;
   operator: string;
+  isRevoked?: boolean;
+  revokedAt?: string;
+  revokedBy?: string;
+  revokeReason?: string;
+  isBatch?: boolean;
 }
 
 export type HandoverPurpose = 'clinic_delivery' | 'chairside_check' | 'return' | 'reissue' | 'damage';
@@ -120,4 +134,49 @@ export interface ExportFilter {
   startDate: string;
   endDate: string;
   recordType: RecordType;
+}
+
+export type OperationType = 'stock-in' | 'shelf-on' | 'shelf-off' | 'inventory' | 'handover' | 'handover-revoke' | 'doctor-update';
+
+export interface OperationLog {
+  id: string;
+  type: OperationType;
+  alignerId?: string;
+  patientId?: string;
+  patientName: string;
+  caseNumber: string;
+  stageNumber?: string;
+  date: string;
+  operator: string;
+  description: string;
+  details?: Record<string, any>;
+}
+
+export interface MonthlyStats {
+  year: number;
+  month: number;
+  stockInCount: number;
+  stockInPairs: number;
+  shelfOnCount: number;
+  shelfOnPairs: number;
+  handoverCount: number;
+  handoverPairs: number;
+  currentInStockCount: number;
+  currentInStockPairs: number;
+  abnormalInventoryCount: number;
+}
+
+export interface ShelfHistoryRecord {
+  id: string;
+  alignerId: string;
+  patientName: string;
+  caseNumber: string;
+  stageNumber: string;
+  cabinetNumber: string;
+  layerNumber: string;
+  cellNumber: string;
+  storedDate: string;
+  removedDate?: string;
+  removedReason?: string;
+  operator?: string;
 }
