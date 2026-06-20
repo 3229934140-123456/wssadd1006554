@@ -1,10 +1,12 @@
-import type { Patient, Aligner, Shelf, HandoverRecord } from '../types';
+import type { Patient, Aligner, Shelf, HandoverRecord, InventoryRecord, InventoryBatch, ExportFilter } from '../types';
 
 const STORAGE_KEYS = {
   PATIENTS: 'aligner_patients',
   ALIGNERS: 'aligner_aligners',
   SHELVES: 'aligner_shelves',
   HANDOVERS: 'aligner_handovers',
+  INVENTORY_RECORDS: 'aligner_inventory_records',
+  INVENTORY_BATCHES: 'aligner_inventory_batches',
 };
 
 export function generateId(): string {
@@ -234,3 +236,183 @@ export const handoverStore = {
     ).sort((a, b) => new Date(b.handoverDate).getTime() - new Date(a.handoverDate).getTime());
   },
 };
+
+export const inventoryStore = {
+  getAllRecords(): InventoryRecord[] {
+    return getFromStorage<InventoryRecord>(STORAGE_KEYS.INVENTORY_RECORDS);
+  },
+
+  getRecordsByBatch(batchId: string): InventoryRecord[] {
+    return this.getAllRecords()
+      .filter(r => r.inventoryBatchId === batchId)
+      .sort((a, b) => {
+        if (a.layerNumber !== b.layerNumber) return a.layerNumber.localeCompare(b.layerNumber);
+        return a.cellNumber.localeCompare(b.cellNumber);
+      });
+  },
+
+  getRecordsByCabinet(cabinetNumber: string): InventoryRecord[] {
+    return this.getAllRecords()
+      .filter(r => r.cabinetNumber === cabinetNumber)
+      .sort((a, b) => new Date(b.inventoryDate).getTime() - new Date(a.inventoryDate).getTime());
+  },
+
+  getAllBatches(): InventoryBatch[] {
+    return getFromStorage<InventoryBatch>(STORAGE_KEYS.INVENTORY_BATCHES)
+      .sort((a, b) => new Date(b.inventoryDate).getTime() - new Date(a.inventoryDate).getTime());
+  },
+
+  getBatchById(id: string): InventoryBatch | undefined {
+    return this.getAllBatches().find(b => b.id === id);
+  },
+
+  createBatch(batch: Omit<InventoryBatch, 'id'>): InventoryBatch {
+    const batches = this.getAllBatches();
+    const newBatch: InventoryBatch = {
+      ...batch,
+      id: generateId(),
+    };
+    batches.push(newBatch);
+    saveToStorage(STORAGE_KEYS.INVENTORY_BATCHES, batches);
+    return newBatch;
+  },
+
+  updateBatch(id: string, updates: Partial<InventoryBatch>): InventoryBatch | undefined {
+    const batches = this.getAllBatches();
+    const index = batches.findIndex(b => b.id === id);
+    if (index === -1) return undefined;
+    batches[index] = { ...batches[index], ...updates };
+    saveToStorage(STORAGE_KEYS.INVENTORY_BATCHES, batches);
+    return batches[index];
+  },
+
+  createRecord(record: Omit<InventoryRecord, 'id'>): InventoryRecord {
+    const records = this.getAllRecords();
+    const newRecord: InventoryRecord = {
+      ...record,
+      id: generateId(),
+    };
+    records.push(newRecord);
+    saveToStorage(STORAGE_KEYS.INVENTORY_RECORDS, records);
+    return newRecord;
+  },
+
+  updateRecord(id: string, updates: Partial<InventoryRecord>): InventoryRecord | undefined {
+    const records = this.getAllRecords();
+    const index = records.findIndex(r => r.id === id);
+    if (index === -1) return undefined;
+    records[index] = { ...records[index], ...updates };
+    saveToStorage(STORAGE_KEYS.INVENTORY_RECORDS, records);
+    return records[index];
+  },
+
+  bulkCreateRecords(records: Omit<InventoryRecord, 'id'>[]): InventoryRecord[] {
+    const existingRecords = this.getAllRecords();
+    const newRecords: InventoryRecord[] = records.map(r => ({
+      ...r,
+      id: generateId(),
+    }));
+    saveToStorage(STORAGE_KEYS.INVENTORY_RECORDS, [...existingRecords, ...newRecords]);
+    return newRecords;
+  },
+};
+
+export function exportRecords(filter: ExportFilter): string {
+  const { startDate, endDate, recordType } = filter;
+  const start = new Date(startDate).getTime();
+  const end = new Date(endDate + 'T23:59:59').getTime();
+
+  let data: any[] = [];
+  let headers: string[] = [];
+
+  switch (recordType) {
+    case 'stock-in': {
+      const aligners = alignerStore.getAll().filter(a => {
+        const arrivedTime = new Date(a.arrivedDate).getTime();
+        return arrivedTime >= start && arrivedTime <= end;
+      });
+      headers = ['到货日期', '患者姓名', '病例号', '阶段编号', '厂家', '到货副数', '总副数', '主治医生', '状态', '柜位', '备注'];
+      data = aligners.map(a => [
+        new Date(a.arrivedDate).toLocaleDateString('zh-CN'),
+        a.patientName,
+        a.caseNumber,
+        `第${a.stageNumber}阶段`,
+        a.manufacturer,
+        a.arrivedPairs,
+        a.totalPairs,
+        a.hasDoctorInfo ? (patientStore.getById(a.patientId)?.doctor || '-') : '待补录',
+        a.status === 'pending' ? '待上架' :
+        a.status === 'stored' ? '已上架' :
+        a.status === 'handed_over' ? '已领取' :
+        a.status === 'returned' ? '已退回' : '已损坏',
+        a.cabinetNumber ? `${a.cabinetNumber}柜-${a.layerNumber}层-${a.cellNumber}格` : '-',
+        a.remark || '',
+      ]);
+      break;
+    }
+    case 'shelf': {
+      const shelves = shelfStore.getAll().filter(s => s.isOccupied);
+      headers = ['柜号', '层号', '格口', '患者姓名', '病例号', '阶段编号', '厂家', '副数', '上架日期', '主治医生'];
+      data = shelves.map(s => {
+        const aligner = s.alignerId ? alignerStore.getById(s.alignerId) : undefined;
+        const patient = aligner ? patientStore.getById(aligner.patientId) : undefined;
+        return [
+          s.cabinetNumber,
+          s.layerNumber,
+          s.cellNumber,
+          aligner?.patientName || '-',
+          aligner?.caseNumber || '-',
+          aligner ? `第${aligner.stageNumber}阶段` : '-',
+          aligner?.manufacturer || '-',
+          aligner?.arrivedPairs || '-',
+          aligner?.storedDate ? new Date(aligner.storedDate).toLocaleDateString('zh-CN') : '-',
+          patient?.doctor || '待补录',
+        ];
+      });
+      break;
+    }
+    case 'handover': {
+      const handovers = handoverStore.getAll().filter(h => {
+        const handoverTime = new Date(h.handoverDate).getTime();
+        return handoverTime >= start && handoverTime <= end;
+      });
+      headers = ['交接日期', '患者姓名', '病例号', '领取人', '身份', '领取副数', '用途', '操作员', '备注'];
+      data = handovers.map(h => [
+        new Date(h.handoverDate).toLocaleString('zh-CN'),
+        h.patientName,
+        h.caseNumber,
+        h.receiver,
+        h.receiverRole,
+        h.pairsTaken,
+        h.purpose === 'clinic_delivery' ? '当场发放' :
+        h.purpose === 'chairside_check' ? '诊室检查' :
+        h.purpose === 'return' ? '退回' :
+        h.purpose === 'reissue' ? '补发' : '包装损坏',
+        h.operator,
+        h.remark || '',
+      ]);
+      break;
+    }
+  }
+
+  const csvContent = [
+    headers.join(','),
+    ...data.map(row => row.map((cell: string | number) => `"${cell}"`).join(',')),
+  ].join('\n');
+
+  const BOM = '\uFEFF';
+  return BOM + csvContent;
+}
+
+export function downloadCSV(content: string, filename: string): void {
+  const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  link.setAttribute('href', url);
+  link.setAttribute('download', filename);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}

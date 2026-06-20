@@ -3,10 +3,11 @@ import StockInPage from './pages/StockInPage';
 import ShelfPage from './pages/ShelfPage';
 import HandoverPage from './pages/HandoverPage';
 import SearchPage from './pages/SearchPage';
+import ExportPage from './pages/ExportPage';
 import { initializeDemoData } from './utils/initData';
 import './App.css';
 
-type PageType = 'stock-in' | 'shelf' | 'handover' | 'search';
+type PageType = 'stock-in' | 'shelf' | 'handover' | 'search' | 'export';
 
 function App() {
   const [currentPage, setCurrentPage] = useState<PageType>('stock-in');
@@ -25,6 +26,7 @@ function App() {
     { key: 'shelf', label: '柜位管理', icon: '🗄️' },
     { key: 'handover', label: '交接签收', icon: '📋' },
     { key: 'search', label: '查询搜索', icon: '🔍' },
+    { key: 'export', label: '数据导出', icon: '📊' },
   ];
 
   const renderPage = () => {
@@ -37,6 +39,8 @@ function App() {
         return <HandoverPage key={refreshKey} onHandoverChange={triggerRefresh} />;
       case 'search':
         return <SearchPage key={refreshKey} />;
+      case 'export':
+        return <ExportPage key={refreshKey} />;
       default:
         return <StockInPage key={refreshKey} onShelfChange={triggerRefresh} />;
     }
